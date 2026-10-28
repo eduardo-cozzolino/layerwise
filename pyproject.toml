@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "layerwise"
 version = "0.1.0"
-description = "Explain why a network service is not reachable: DNS, TCP, TLS and HTTP checks with plain-language hints."
+description = "Layer-by-layer network troubleshooting with ticket-ready escalation reports."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

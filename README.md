@@ -3,7 +3,7 @@
 [![CI](https://github.com/eduardo-cozzolino/layerwise/actions/workflows/ci.yml/badge.svg)](https://github.com/eduardo-cozzolino/layerwise/actions/workflows/ci.yml)
 
 **Layer-by-layer network troubleshooting with ticket-ready escalation reports.** `layerwise` tests a network service layer by layer
-(DNS, TCP over IPv4 and IPv6, TLS, HTTP) and, when something fails, explains in plain language
+(local configuration, DNS, TCP over IPv4 and IPv6, TLS, HTTP) and, when something fails, explains in plain language
 what that failure tells you about the network and what to check next.
 
 ```text
@@ -84,13 +84,13 @@ pip install .
 ## Usage
 
 ```bash
-layerwise example.com                      # DNS, TCP, TLS and HTTPS on port 443
-layerwise example.com:22 198.51.100.7:3389 # several targets; other ports stop at TCP
-layerwise https://example.com:8443/login   # URLs work too: scheme and port are taken from them
-layerwise "[2001:db8::1]:53"               # IPv6 literal with a port
-layerwise intranet.local --tls -p 8443     # force the TLS check on a non-standard port
-layerwise example.com --json               # machine-readable output
-layerwise 203.0.113.10:3389 --report       # plain-text report to paste into a ticket
+layerwise example.com                         # DNS, TCP, TLS and HTTPS on port 443
+layerwise example.com:22 198.51.100.7:3389    # several targets; other ports stop at TCP
+layerwise https://example.com:8443/login      # URLs work too: scheme and port are taken from them
+layerwise "[2001:db8::1]:53"                  # IPv6 literal with a port
+layerwise intranet.example.com --tls -p 8443  # force the TLS check on a non-standard port
+layerwise example.com --json                  # machine-readable output
+layerwise 203.0.113.10:3389 --report          # plain-text report to paste into a ticket
 ```
 
 | Exit code | Meaning |
@@ -165,6 +165,7 @@ pytest
 
 ## Roadmap
 
+- [ ] --redact: replace your own addresses with documentation addresses, to share output publicly
 - [ ] Path MTU check (ping with the Don't Fragment bit) to catch MTU black holes on VPNs and tunnels
 - [ ] Traceroute on timeout, to show where along the path packets stop
 - [ ] Query a specific DNS server and compare its answer with the system resolver
