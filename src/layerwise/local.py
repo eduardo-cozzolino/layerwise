@@ -1,0 +1,254 @@
+"""Layer 0: the machine itself. Does it have an address, and a route out?
+
+The source address comes from a connected UDP socket: connect() on UDP sends no
+packet, it only asks the kernel which route and source address it would use.
+
+Gateway, DNS servers and interface name come from PowerShell as JSON, on Windows
+only: structured data, never the translated text of ipconfig. When they cannot be
+collected reliably they are reported as missing, with the reason, not as a failure.
+"""
+
+from __future__ import annotations
+
+import functools
+import ipaddress
+import json
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+from layerwise.models import CheckResult, Status
+from layerwise.text import to_ascii
+
+# Destinations for the default-route probe when the target is a name (nothing is sent to them).
+PROBE_ADDRESSES = [(socket.AF_INET, "1.1.1.1"), (socket.AF_INET6, "2606:4700:4700::1111")]
+PROBE_PORT = 53
+POWERSHELL_TIMEOUT = 5.0
+APIPA = ipaddress.ip_network("169.254.0.0/16")
+FAMILY_LABELS = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
+
+# One object per interface: alias, its addresses, its default routes (next hop and total
+# metric, RouteMetric + InterfaceMetric, the number Windows compares), its DNS servers.
+# UTF-8 output: PowerShell 5.1 would otherwise write in the OEM code page (cp850 in Italy).
+POWERSHELL_SCRIPT = """
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$routes = Get-NetRoute -DestinationPrefix '0.0.0.0/0','::/0' -ErrorAction SilentlyContinue
+$dns = Get-DnsClientServerAddress -ErrorAction SilentlyContinue
+$items = Get-NetIPAddress -ErrorAction SilentlyContinue | Group-Object InterfaceIndex |
+ForEach-Object {
+  $index = [int]$_.Name
+  [pscustomobject]@{
+    alias = $_.Group[0].InterfaceAlias
+    addresses = @($_.Group | ForEach-Object { $_.IPAddress })
+    gateways = @($routes | Where-Object InterfaceIndex -eq $index | ForEach-Object {
+      [pscustomobject]@{ next_hop = $_.NextHop; metric = $_.RouteMetric + $_.InterfaceMetric }
+    })
+    dns = @($dns | Where-Object InterfaceIndex -eq $index | ForEach-Object { $_.ServerAddresses })
+  }
+}
+ConvertTo-Json -InputObject @($items) -Depth 3 -Compress
+"""
+
+
+def _source_address(family: int, destination: str) -> str:
+    """The local address the kernel would use towards destination. OSError if there is no route."""
+    with socket.socket(family, socket.SOCK_DGRAM) as sock:
+        sock.connect((destination, PROBE_PORT))
+        return sock.getsockname()[0].split("%")[0]
+
+
+def _addresses(value: object) -> list[str]:
+    """PowerShell arrays hold nulls (no IPv6 address) and on-link routes (a VPN, for example)
+    have 0.0.0.0 or :: as next hop: keep only real addresses, without the %zone suffix."""
+    items = value if isinstance(value, list) else [value]
+    result = []
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        address = item.split("%")[0]
+        try:
+            if ipaddress.ip_address(address).is_unspecified:
+                continue
+        except ValueError:
+            continue
+        if address not in result:
+            result.append(address)
+    return result
+
+
+def _best_gateways(routes: object) -> list[str]:
+    """The default gateway per family: with several default routes, the lowest total metric
+    wins, as Windows decides. IPv4 first, then IPv6."""
+    best: dict[int, tuple[int, str]] = {}
+    for route in routes if isinstance(routes, list) else [routes]:
+        if not isinstance(route, dict):
+            continue
+        hops = _addresses(route.get("next_hop"))
+        metric = route.get("metric")
+        if not hops or not isinstance(metric, int):
+            continue
+        version = ipaddress.ip_address(hops[0]).version
+        if version not in best or metric < best[version][0]:
+            best[version] = (metric, hops[0])
+    return [best[version][1] for version in sorted(best)]
+
+
+@functools.lru_cache(maxsize=1)
+def network_config() -> tuple[tuple[dict, ...] | None, str | None]:
+    """(interfaces, None), or (None, why they are missing). Cached: one PowerShell per run."""
+    if sys.platform != "win32":
+        return None, f"not collected on {sys.platform}: only Windows is supported"
+    executable = shutil.which("powershell")
+    if executable is None:
+        return None, "not collected: powershell not found"
+    try:
+        completed = subprocess.run(
+            [executable, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_SCRIPT],
+            capture_output=True,
+            timeout=POWERSHELL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"not collected: PowerShell did not answer within {POWERSHELL_TIMEOUT:g} s"
+    except OSError as exc:
+        return None, f"not collected: PowerShell could not start ({type(exc).__name__})"
+    if completed.returncode != 0:
+        return None, f"not collected: PowerShell exited with code {completed.returncode}"
+    try:
+        data = json.loads(completed.stdout.decode("utf-8-sig", errors="replace"))
+    except ValueError:
+        return None, "not collected: PowerShell output is not valid JSON"
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return None, "not collected: unexpected PowerShell output"
+    interfaces = tuple(
+        {
+            "alias": str(item.get("alias") or ""),
+            "addresses": _addresses(item.get("addresses")),
+            "gateways": _best_gateways(item.get("gateways")),
+            "dns": _addresses(item.get("dns")),
+        }
+        for item in data
+        if isinstance(item, dict)
+    )
+    return interfaces, None
+
+
+def _is_routable(address: str) -> bool:
+    """An address that can talk beyond the link: not loopback, not APIPA, not fe80::."""
+    ip = ipaddress.ip_address(address)
+    return not (ip.is_loopback or ip.is_link_local)
+
+
+def _interface_for(address: str, interfaces: tuple[dict, ...]) -> dict | None:
+    return next((i for i in interfaces if address in i["addresses"]), None)
+
+
+def check_local(host: str) -> CheckResult:
+    """Source address and outgoing interface towards host (an IP) or the internet (a name)."""
+    start = time.perf_counter()
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        probes = [(socket.AF_INET6 if ip.version == 6 else socket.AF_INET, host)]
+    else:
+        probes = PROBE_ADDRESSES
+
+    sources: dict[int, str] = {}
+    errors: list[str] = []
+    for family, destination in probes:
+        try:
+            sources[family] = _source_address(family, destination)
+        except OSError as exc:
+            errors.append(f"{FAMILY_LABELS[family]}: {exc}")
+    usable = {f: a for f, a in sources.items() if not ipaddress.ip_address(a).is_unspecified}
+
+    interfaces, note = network_config()
+    first = next(iter(usable.values()), None)
+    interface = _interface_for(first, interfaces) if first and interfaces else None
+    if interfaces is not None and note is None and interface is None and first:
+        note = f"no interface found with address {first}"
+
+    # Only the gateways of the families that were probed (an IPv4 target: the IPv4 gateway).
+    versions = {ipaddress.ip_address(a).version for a in usable.values()}
+    details: dict = {
+        "local_addresses": list(usable.values()),
+        "interface": to_ascii(interface["alias"]) if interface else None,
+        "gateways": (
+            [g for g in interface["gateways"] if ipaddress.ip_address(g).version in versions]
+            if interface
+            else None
+        ),
+        "dns_servers": interface["dns"] if interface else None,
+    }
+    if note:
+        details["network_note"] = note
+    if errors:
+        details["os_error"] = "; ".join(errors)
+    duration = round((time.perf_counter() - start) * 1000, 1)
+
+    apipa = [a for a in usable.values() if ipaddress.ip_address(a) in APIPA]
+    # Without PowerShell data we cannot tell "no address" from "no default route".
+    has_any_address = interfaces is None or any(
+        _is_routable(a) for i in interfaces for a in i["addresses"]
+    )
+
+    if apipa:
+        return CheckResult(
+            "LOCAL",
+            Status.FAIL,
+            f"self-assigned address {apipa[0]} (APIPA): no DHCP answer",
+            hint=(
+                "The PC gave itself a 169.254.x.x address because no DHCP server answered. "
+                "Check the cable or the Wi-Fi association, then the DHCP server or the switch "
+                "port (VLAN)."
+            ),
+            duration_ms=duration,
+            details=details,
+        )
+    if not usable and not has_any_address:
+        return CheckResult(
+            "LOCAL",
+            Status.FAIL,
+            "no IP address on any interface",
+            hint="The PC is not connected: check the cable, the Wi-Fi or the network adapter.",
+            duration_ms=duration,
+            details=details,
+        )
+    if not usable and ip is not None:
+        return CheckResult(
+            "LOCAL",
+            Status.FAIL,
+            f"no route to {host}",
+            hint=(
+                "The routing table of this PC has no route to that network: no default "
+                "gateway, or a VPN that is not connected."
+            ),
+            duration_ms=duration,
+            details=details,
+        )
+    if not usable:
+        return CheckResult(
+            "LOCAL",
+            Status.WARN,
+            "no default route: only internal destinations reachable",
+            hint=(
+                "Normal on corporate networks that reach the internet through a proxy. "
+                "Otherwise the default gateway is missing: check the DHCP lease or the VPN."
+            ),
+            duration_ms=duration,
+            details=details,
+        )
+
+    summary = ", ".join(usable.values())
+    if details["interface"]:
+        summary += f" via {details['interface']}"
+    if details["gateways"]:
+        summary += ", gateway " + ", ".join(details["gateways"])
+    if details["dns_servers"]:
+        summary += ", DNS " + ", ".join(details["dns_servers"])
+    return CheckResult("LOCAL", Status.OK, summary, duration_ms=duration, details=details)
