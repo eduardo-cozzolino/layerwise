@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Local test output
+out.txt
+report.json
+targets.txt
+*.log
+.env
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
