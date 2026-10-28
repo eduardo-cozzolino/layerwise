@@ -76,17 +76,17 @@ Checks stop at the first layer that fails: if TCP never connects, testing TLS wo
 Requires Python 3.10+. No third-party dependencies: only the standard library.
 
 ```bash
-git clone https://github.com/eduardo-cozzolino/layerwise.git
-cd layerwise
-pip install .
+pip install git+https://github.com/eduardo-cozzolino/layerwise.git@v0.1.1
 ```
+
+Or from a clone, to work on the code: `git clone` the repository, then `pip install -e ".[dev]"`.
 
 ## Usage
 
 ```bash
 layerwise example.com                         # DNS, TCP, TLS and HTTPS on port 443
 layerwise example.com:22 198.51.100.7:3389    # several targets; other ports stop at TCP
-layerwise https://example.com:8443/login      # URLs work too: scheme and port are taken from them
+layerwise https://example.com:8443/login      # URLs work too: scheme, port and path are taken from them
 layerwise "[2001:db8::1]:53"                  # IPv6 literal with a port
 layerwise intranet.example.com --tls -p 8443  # force the TLS check on a non-standard port
 layerwise example.com --json                  # machine-readable output
@@ -105,7 +105,8 @@ The exit codes make `layerwise` easy to use from scripts and monitoring jobs.
 
 `--report` prints plain ASCII text meant for a ticket: a verdict with the team that can fix it
 on the first line, then the local context, the addresses tried and the evidence for every check.
-Checks that did not run say which lower layer failed.
+Checks that did not run say which lower layer failed. `--json` carries the same evidence for
+each target: `tried` (the addresses tested) and `skipped` (each check not run, with its cause).
 
 ```text
 $ layerwise 203.0.113.10:3389 -t 2 --report
@@ -133,10 +134,27 @@ Checks:
 The suggested team follows the first failing layer: LOCAL -> desktop support, DNS -> DNS,
 TCP timeout or no route -> firewall, TCP refused -> service owner, TLS -> site/certificate owner,
 HTTP -> application. With warnings only, the first warning decides: slow DNS or slow TCP ->
-network (latency or path), IPv6 failing while IPv4 works -> network (IPv6). Gateway, DNS servers and interface name are collected on Windows only
-(PowerShell, as JSON); elsewhere the report says they were not collected and why.
+network (latency or path), IPv6 failing while IPv4 works -> network (IPv6).
+
+Gateway, DNS servers and interface name come from structured data, never from translated
+command output: PowerShell (as JSON) on Windows; on Linux the kernel's routing tables
+(`/proc/net/route`, `/proc/net/ipv6_route`) and `/etc/resolv.conf`. On other systems, such as
+macOS, the report says they were not collected and why.
 
 ## Design
+
+```mermaid
+flowchart LR
+    cli["cli.py<br>arguments, exit codes"] --> runner["runner.py<br>layer by layer"]
+    runner -->|reads| registry["registry.py<br>check, layer, dependency"]
+    registry --> checks
+    subgraph checks["checks: stop at the first failing layer"]
+        direction LR
+        local["LOCAL<br>local.py"] --> dns["DNS"] --> tcp["TCP<br>IPv4 + IPv6"] --> tls["TLS"] --> http["HTTP"]
+    end
+    checks -->|"results, tried, skipped"| report["report.py<br>text, --json"]
+    checks -->|"results, tried, skipped"| escalation["escalation.py<br>--report"]
+```
 
 ```text
 cli.py         argument parsing, exit codes
@@ -153,13 +171,14 @@ text.py        ASCII helpers: accents dropped, international names in punycode
 Output is English ASCII whatever the Windows language: messages are built from exception types
 and error codes, and the operating system's translated text only goes into the details.
 
-Tests run against real sockets and a local HTTP server on `127.0.0.1`, with fakes for routing
-and PowerShell, so they need no internet access. CI runs them on Linux, Windows and macOS, plus
+Tests run against real sockets and a local HTTP server on `127.0.0.1`, with fakes for routing,
+PowerShell and the Linux `/proc` files, so they need no internet access. CI runs them on Linux, Windows and macOS, plus
 a smoke test against real hosts.
 
 ```bash
 pip install -e ".[dev]"
 ruff check . && ruff format --check .
+mypy
 pytest
 ```
 
