@@ -12,6 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The HTTP check connects to the address the TCP check verified, instead of resolving the name
   again. The `Host` header, SNI and certificate check still use the name the user typed.
 - The HTTP check requests the path of the URL when one is given (`/` otherwise).
+- A TLS handshake that completes without a server certificate is reported as a failure,
+  instead of stopping the program.
 
 ### Added
 
