@@ -13,13 +13,28 @@ from layerwise.targets import Target, parse_target
         ("2001:db8::1", Target("2001:db8::1", 443)),
         ("[2001:db8::1]:53", Target("2001:db8::1", 53)),
         ("[2001:db8::1]", Target("2001:db8::1", 443)),
-        ("http://example.com/some/path", Target("example.com", 80, "http")),
-        ("https://example.com:8443/", Target("example.com", 8443, "https")),
+        ("http://example.com/some/path", Target("example.com", 80, "http", "/some/path")),
+        ("https://example.com:8443/", Target("example.com", 8443, "https", "/")),
+        ("https://example.com", Target("example.com", 443, "https")),
         ("  example.com  ", Target("example.com", 443)),
     ],
 )
 def test_parse_target(text, expected):
     assert parse_target(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "path"),
+    [
+        ("https://example.com/login?next=/home", "/login?next=/home"),
+        ("https://example.com?q=1", "/?q=1"),
+        ("https://example.com/docs#install", "/docs"),
+        ("https://[2001:db8::1]:8443/status", "/status"),
+        ("example.com:8080", None),
+    ],
+)
+def test_url_path_is_kept(text, path):
+    assert parse_target(text).path == path
 
 
 def test_default_port_is_used_when_missing():

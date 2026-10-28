@@ -18,6 +18,7 @@ class Target:
     host: str
     port: int
     scheme: str | None = None
+    path: str | None = None  # from a URL: path and query, without the #fragment
 
     def __str__(self) -> str:
         host = f"[{self.host}]" if ":" in self.host else ascii_host(self.host)
@@ -27,6 +28,7 @@ class Target:
 def parse_target(text: str, default_port: int = 443) -> Target:
     text = text.strip()
     scheme = None
+    path = None
 
     if "://" in text:
         scheme, _, text = text.partition("://")
@@ -34,7 +36,12 @@ def parse_target(text: str, default_port: int = 443) -> Target:
         if scheme not in SCHEME_PORTS:
             raise ValueError(f"unsupported scheme: {scheme}")
         default_port = SCHEME_PORTS[scheme]
-        text = text.split("/", 1)[0]
+        text = text.partition("#")[0]  # the fragment never reaches the server
+        # The authority ends at the first "/" or "?": what follows is the path the server sees.
+        end = min((i for i in (text.find("/"), text.find("?")) if i >= 0), default=len(text))
+        text, rest = text[:end], text[end:]
+        if rest:
+            path = rest if rest.startswith("/") else "/" + rest
 
     if text.startswith("["):
         host, _, rest = text[1:].partition("]")
@@ -58,4 +65,4 @@ def parse_target(text: str, default_port: int = 443) -> Target:
     if not 1 <= port_number <= 65535:
         raise ValueError(f"port out of range: {port_number}")
 
-    return Target(host=host, port=port_number, scheme=scheme)
+    return Target(host=host, port=port_number, scheme=scheme, path=path)

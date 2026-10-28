@@ -8,6 +8,7 @@ import textwrap
 from typing import TextIO
 
 from layerwise.models import CheckResult, Status, worst_status
+from layerwise.registry import Context
 from layerwise.targets import Target
 
 LABELS = {Status.OK: " OK ", Status.WARN: "WARN", Status.FAIL: "FAIL", Status.SKIP: "SKIP"}
@@ -47,12 +48,15 @@ def format_text(target: Target, results: list[CheckResult], color: bool = False)
     return "\n".join(lines)
 
 
-def to_dict(target: Target, results: list[CheckResult]) -> dict:
+def to_dict(target: Target, results: list[CheckResult], ctx: Context) -> dict:
+    """One target; tried and skipped carry the same evidence as the --report text."""
     return {
         "target": str(target),
         "host": target.host,
         "port": target.port,
         "status": worst_status(results).value,
+        "tried": ctx.tried,
+        "skipped": [{"check": check, "cause": cause} for check, cause in ctx.skipped],
         "checks": [
             {
                 "name": r.name,
@@ -67,5 +71,5 @@ def to_dict(target: Target, results: list[CheckResult]) -> dict:
     }
 
 
-def format_json(reports: list[tuple[Target, list[CheckResult]]]) -> str:
-    return json.dumps([to_dict(target, results) for target, results in reports], indent=2)
+def format_json(runs: list[tuple[Target, list[CheckResult], Context]]) -> str:
+    return json.dumps([to_dict(target, results, ctx) for target, results, ctx in runs], indent=2)

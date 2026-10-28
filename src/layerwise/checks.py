@@ -306,13 +306,41 @@ def check_tls(host: str, address: str, port: int, timeout: float) -> CheckResult
     return summarize_certificate(version, cert, time.time(), _elapsed_ms(start))
 
 
-def check_http(host: str, port: int, timeout: float, use_tls: bool) -> CheckResult:
-    """Send GET / and look at the status code."""
-    connection_class = http.client.HTTPSConnection if use_tls else http.client.HTTPConnection
-    connection = connection_class(host, port, timeout=timeout)
+class _NamedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a fixed address, with SNI and certificate check for the name.
+
+    http.client would use one host for both: the connection must go to the address TCP
+    verified, the certificate must be valid for the name the user asked for.
+    """
+
+    def __init__(self, address: str, port: int, server_name: str, timeout: float) -> None:
+        self._tls_context = ssl.create_default_context()
+        super().__init__(address, port, timeout=timeout, context=self._tls_context)
+        self._server_name = server_name
+
+    def connect(self) -> None:
+        http.client.HTTPConnection.connect(self)
+        self.sock = self._tls_context.wrap_socket(self.sock, server_hostname=self._server_name)
+
+
+def _host_header(host: str, port: int, use_tls: bool) -> str:
+    """The Host header for the name: punycode, IPv6 in brackets, the port only if not default."""
+    name = f"[{host}]" if ":" in host else ascii_host(host)
+    return name if port == (443 if use_tls else 80) else f"{name}:{port}"
+
+
+def check_http(
+    host: str, address: str, port: int, timeout: float, use_tls: bool, path: str = "/"
+) -> CheckResult:
+    """Send GET path to address (the one TCP verified) for host, and look at the status code."""
+    if use_tls:
+        connection: http.client.HTTPConnection = _NamedHTTPSConnection(address, port, host, timeout)
+    else:
+        connection = http.client.HTTPConnection(address, port, timeout=timeout)
+    headers = {"Host": _host_header(host, port, use_tls), "User-Agent": f"layerwise/{__version__}"}
     start = time.perf_counter()
     try:
-        connection.request("GET", "/", headers={"User-Agent": f"layerwise/{__version__}"})
+        connection.request("GET", path, headers=headers)
         response = connection.getresponse()
         status, reason = response.status, response.reason
         location = response.getheader("Location")

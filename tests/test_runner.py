@@ -35,8 +35,9 @@ def fake_network(monkeypatch):
         state["calls"].append("tls")
         return CheckResult("TLS", state["tls"], "tls")
 
-    def http(host, port, timeout, use_tls):
+    def http(host, address, port, timeout, use_tls, path):
         state["calls"].append("http")
+        state["http"] = {"host": host, "address": address, "path": path}
         return CheckResult("HTTP", Status.OK, "200 OK")
 
     monkeypatch.setattr(checks, "check_dns", dns)
@@ -49,6 +50,16 @@ def fake_network(monkeypatch):
 def test_all_layers_run_on_443(fake_network):
     results = run_checks(Target("example.com", 443))
     assert [r.name for r in results] == ["LOCAL", "DNS", f"TCP {V4}", f"TCP {V6}", "TLS", "HTTP"]
+
+
+def test_http_goes_to_the_connected_address_with_the_url_path(fake_network):
+    run_checks(Target("example.com", 443, "https", "/login?next=/"))
+    assert fake_network["http"] == {"host": "example.com", "address": V4, "path": "/login?next=/"}
+
+
+def test_http_path_defaults_to_root(fake_network):
+    run_checks(Target("example.com", 443))
+    assert fake_network["http"]["path"] == "/"
 
 
 def test_other_ports_stop_at_tcp(fake_network):

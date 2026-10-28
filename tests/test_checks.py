@@ -178,14 +178,15 @@ def _http_error(monkeypatch):
     monkeypatch.setattr(
         http.client.HTTPConnection, "request", _raise(ConnectionResetError(10054, IT_RESET))
     )
-    return checks.check_http("example.com", 80, timeout=1, use_tls=False)
+    return checks.check_http("example.com", "192.0.2.10", 80, timeout=1, use_tls=False)
 
 
 def _http_latin1(monkeypatch):
     # A server sending a French reason phrase and an accented Location (latin-1 on the wire).
     server = http_server(301, reason="Déplacé", headers={"Location": "/café"})
     try:
-        return checks.check_http("127.0.0.1", server.server_address[1], 3, use_tls=False)
+        port = server.server_address[1]
+        return checks.check_http("127.0.0.1", "127.0.0.1", port, 3, use_tls=False)
     finally:
         server.shutdown()
         server.server_close()
@@ -300,12 +301,74 @@ def test_http_status_codes(code, expected):
     server = http_server(code)
     try:
         port = server.server_address[1]
-        result = checks.check_http("127.0.0.1", port, timeout=3, use_tls=False)
+        result = checks.check_http("127.0.0.1", "127.0.0.1", port, timeout=3, use_tls=False)
     finally:
         server.shutdown()
         server.server_close()
     assert result.status is expected
     assert result.details["status"] == code
+
+
+def test_http_sends_the_name_and_path_to_the_address():
+    # The name does not resolve to 127.0.0.1: only the address decides where the request goes.
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            received["hosts"] = self.headers.get_all("Host")
+            received["path"] = self.path
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        result = checks.check_http(
+            "www.example.com", "127.0.0.1", port, timeout=3, use_tls=False, path="/login?x=1"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert result.status is Status.OK
+    assert received == {"hosts": [f"www.example.com:{port}"], "path": "/login?x=1"}
+
+
+@pytest.mark.parametrize(
+    ("host", "port", "use_tls", "expected"),
+    [
+        ("example.com", 443, True, "example.com"),
+        ("example.com", 80, False, "example.com"),
+        ("example.com", 8443, True, "example.com:8443"),
+        ("example.com", 443, False, "example.com:443"),
+        ("bücher.example", 443, True, "xn--bcher-kva.example"),
+        ("2001:db8::1", 8080, False, "[2001:db8::1]:8080"),
+    ],
+)
+def test_host_header(host, port, use_tls, expected):
+    assert checks._host_header(host, port, use_tls) == expected
+
+
+def test_https_connects_to_the_address_but_verifies_the_name(monkeypatch):
+    connection = checks._NamedHTTPSConnection("192.0.2.10", 443, "example.com", timeout=1)
+    seen = {}
+
+    def create(address, *args, **kwargs):
+        seen["address"] = address
+        return socket.socket()
+
+    def wrap(sock, server_hostname):
+        seen["server_hostname"] = server_hostname
+        return sock
+
+    monkeypatch.setattr(connection, "_create_connection", create)
+    monkeypatch.setattr(connection._tls_context, "wrap_socket", wrap)
+    connection.connect()
+    connection.close()
+    assert seen == {"address": ("192.0.2.10", 443), "server_hostname": "example.com"}
 
 
 def test_slow_tcp_is_tagged(monkeypatch, listening_port):

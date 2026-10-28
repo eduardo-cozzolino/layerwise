@@ -104,7 +104,17 @@ def _run_tls(ctx: Context) -> list[CheckResult]:
 
 
 def _run_http(ctx: Context) -> list[CheckResult]:
-    return [checks.check_http(ctx.target.host, ctx.target.port, ctx.timeout, use_tls=ctx.tls)]
+    target = ctx.target
+    return [
+        checks.check_http(
+            target.host,
+            ctx.connected[0],
+            target.port,
+            ctx.timeout,
+            use_tls=ctx.tls,
+            path=target.path or "/",
+        )
+    ]
 
 
 REGISTRY = [

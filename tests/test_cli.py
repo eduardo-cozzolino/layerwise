@@ -34,6 +34,20 @@ def test_json_output(fake_run, capsys):
     assert data[0]["checks"][0]["status"] == "ok"
 
 
+def test_json_has_tried_and_skipped(monkeypatch, capsys):
+    def run(target, timeout, tls, http):
+        ctx = Context(target=target, timeout=timeout, tls=True, http=True)
+        ctx.tried = ["192.0.2.10", "2001:db8::10"]
+        ctx.skipped = [("tls", "tcp"), ("http", "tcp")]
+        return [CheckResult("TCP IPv4", Status.FAIL, "no answer")], ctx
+
+    monkeypatch.setattr(cli, "run_target", run)
+    cli.main(["example.com", "--json"])
+    data = json.loads(capsys.readouterr().out)[0]
+    assert data["tried"] == ["192.0.2.10", "2001:db8::10"]
+    assert data["skipped"] == [{"check": "tls", "cause": "tcp"}, {"check": "http", "cause": "tcp"}]
+
+
 def test_hint_is_printed_on_failure(fake_run, capsys):
     fake_run["status"] = Status.FAIL
     cli.main(["example.com", "--no-color"])

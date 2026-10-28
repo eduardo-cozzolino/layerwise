@@ -24,8 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="layerwise",
         description=(
-            "Explain why a network service is not reachable: "
-            "DNS, TCP (IPv4 and IPv6), TLS and HTTP checks with plain-language hints."
+            "Diagnose a network service layer by layer: local configuration (layer 0), DNS, "
+            "TCP over IPv4 and IPv6, TLS and HTTP, with plain-language hints and an escalation "
+            "report for tickets."
         ),
     )
     parser.add_argument(
@@ -80,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(errors="backslashreplace")
 
     if args.json:
-        print(format_json(reports))
+        print(format_json(runs))
     elif args.report:
         print(build_report(runs, datetime.now(timezone.utc)))
     else:
