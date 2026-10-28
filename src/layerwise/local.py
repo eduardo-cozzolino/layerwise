@@ -3,9 +3,10 @@
 The source address comes from a connected UDP socket: connect() on UDP sends no
 packet, it only asks the kernel which route and source address it would use.
 
-Gateway, DNS servers and interface name come from PowerShell as JSON, on Windows
-only: structured data, never the translated text of ipconfig. When they cannot be
-collected reliably they are reported as missing, with the reason, not as a failure.
+Gateway, DNS servers and interface name come from structured data, never from the
+translated text of a command: PowerShell as JSON on Windows, the kernel's routing
+tables in /proc and /etc/resolv.conf on Linux. Elsewhere, or when they cannot be
+collected reliably, they are reported as missing, with the reason, not as a failure.
 """
 
 from __future__ import annotations
@@ -28,6 +29,11 @@ PROBE_PORT = 53
 POWERSHELL_TIMEOUT = 5.0
 APIPA = ipaddress.ip_network("169.254.0.0/16")
 FAMILY_LABELS = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
+
+PROC_ROUTE = "/proc/net/route"
+PROC_IPV6_ROUTE = "/proc/net/ipv6_route"
+RESOLV_CONF = "/etc/resolv.conf"
+RTF_UP_GATEWAY = 0x0001 | 0x0002  # route flags: RTF_UP, RTF_GATEWAY (it has a next hop)
 
 # One object per interface: alias, its addresses, its default routes (next hop and total
 # metric, RouteMetric + InterfaceMetric, the number Windows compares), its DNS servers.
@@ -99,7 +105,7 @@ def _best_gateways(routes: object) -> list[str]:
 def network_config() -> tuple[tuple[dict, ...] | None, str | None]:
     """(interfaces, None), or (None, why they are missing). Cached: one PowerShell per run."""
     if sys.platform != "win32":
-        return None, f"not collected on {sys.platform}: only Windows is supported"
+        return None, f"not collected on {sys.platform}: only Windows and Linux are supported"
     executable = shutil.which("powershell")
     if executable is None:
         return None, "not collected: powershell not found"
@@ -136,6 +142,112 @@ def network_config() -> tuple[tuple[dict, ...] | None, str | None]:
     return interfaces, None
 
 
+# Linux: the kernel's own tables, read as files. No command to run, no translated text.
+#
+# With several default routes the lowest metric wins. That is the kernel's choice in the
+# usual case, not with policy routing (several routing tables, as some VPNs set up): there
+# the rules decide which table is used, and these files do not show that decision.
+
+
+def _best_default(candidates: list[tuple[int, str, str]]) -> tuple[str, str] | None:
+    """(interface, gateway) of the (metric, interface, gateway) with the lowest metric."""
+    if not candidates:
+        return None
+    _, interface, gateway = min(candidates, key=lambda candidate: candidate[0])
+    return interface, gateway
+
+
+def parse_proc_route(text: str) -> tuple[str, str] | None:
+    """The IPv4 default route in /proc/net/route, as (interface, gateway).
+
+    Columns: Iface Destination Gateway Flags RefCnt Use Metric Mask ...; addresses are hex
+    in host byte order (little-endian on x86 and ARM), the metric is decimal.
+    """
+    candidates = []
+    for line in text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 8 or fields[1] != "00000000" or fields[7] != "00000000":
+            continue
+        try:
+            flags, metric = int(fields[3], 16), int(fields[6])
+            gateway = ipaddress.IPv4Address(int.from_bytes(bytes.fromhex(fields[2]), "little"))
+        except ValueError:
+            continue
+        if flags & RTF_UP_GATEWAY == RTF_UP_GATEWAY and not gateway.is_unspecified:
+            candidates.append((metric, fields[0], str(gateway)))
+    return _best_default(candidates)
+
+
+def parse_proc_ipv6_route(text: str) -> tuple[str, str] | None:
+    """The IPv6 default route in /proc/net/ipv6_route, as (interface, gateway).
+
+    No header. Columns: destination, prefix length, source, prefix length, next hop, metric,
+    refcount, use, flags, interface; addresses in network byte order, numbers in hex.
+    """
+    candidates = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 10 or fields[0] != "0" * 32 or fields[1] != "00":
+            continue
+        try:
+            metric, flags = int(fields[5], 16), int(fields[8], 16)
+            gateway = ipaddress.IPv6Address(bytes.fromhex(fields[4]))
+        except ValueError:
+            continue
+        if flags & RTF_UP_GATEWAY == RTF_UP_GATEWAY and not gateway.is_unspecified:
+            candidates.append((metric, fields[9], str(gateway)))
+    return _best_default(candidates)
+
+
+def parse_resolv_conf(text: str) -> list[str]:
+    """The nameserver addresses, in order; comments and other options are ignored."""
+    servers = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "nameserver":
+            servers.append(fields[1])
+    return _addresses(servers)
+
+
+def _read(path: str) -> tuple[str | None, str | None]:
+    """(content, None) or (None, why it could not be read): the exception type, never its
+    translated message."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as file:
+            return file.read(), None
+    except OSError as exc:
+        return None, f"{path} not readable ({type(exc).__name__})"
+
+
+def linux_config(versions: set[int]) -> tuple[str | None, list[str] | None, list[str] | None, str]:
+    """(interface, gateways, DNS servers, note) for the IP versions in use.
+
+    Gateways and DNS servers are None when their file cannot be read, and the note says why.
+    A missing ipv6_route only means IPv6 is disabled in the kernel: no IPv6 gateway, no note.
+    """
+    notes = []
+    defaults: dict[int, tuple[str, str] | None] = {}
+    route_text, problem = _read(PROC_ROUTE)
+    if problem:
+        notes.append(problem)
+    elif 4 in versions:
+        defaults[4] = parse_proc_route(route_text or "")
+    if 6 in versions:
+        ipv6_text, _ = _read(PROC_IPV6_ROUTE)
+        defaults[6] = parse_proc_ipv6_route(ipv6_text or "")
+    found = [route for route in defaults.values() if route is not None]
+
+    resolv_text, problem = _read(RESOLV_CONF)
+    if problem:
+        notes.append(problem)
+
+    interface = found[0][0] if found else None
+    gateways = None if route_text is None else [gateway for _, gateway in found]
+    dns = None if resolv_text is None else parse_resolv_conf(resolv_text)
+    note = "; ".join(f"not collected: {problem}" for problem in notes)
+    return interface, gateways, dns, note
+
+
 def _is_routable(address: str) -> bool:
     """An address that can talk beyond the link: not loopback, not APIPA, not fe80::."""
     ip = ipaddress.ip_address(address)
@@ -167,23 +279,34 @@ def check_local(host: str) -> CheckResult:
             errors.append(f"{FAMILY_LABELS[family]}: {exc}")
     usable = {f: a for f, a in sources.items() if not ipaddress.ip_address(a).is_unspecified}
 
-    interfaces, note = network_config()
-    first = next(iter(usable.values()), None)
-    interface = _interface_for(first, interfaces) if first and interfaces else None
-    if interfaces is not None and note is None and interface is None and first:
-        note = f"no interface found with address {first}"
-
     # Only the gateways of the families that were probed (an IPv4 target: the IPv4 gateway).
     versions = {ipaddress.ip_address(a).version for a in usable.values()}
-    details: dict = {
-        "local_addresses": list(usable.values()),
-        "interface": to_ascii(interface["alias"]) if interface else None,
-        "gateways": (
+    interfaces: tuple[dict, ...] | None = None
+    alias: str | None
+    gateways: list[str] | None
+    dns_servers: list[str] | None
+    if sys.platform.startswith("linux"):
+        alias, gateways, dns_servers, linux_note = linux_config(versions)
+        note: str | None = linux_note or None
+    else:
+        interfaces, note = network_config()
+        first = next(iter(usable.values()), None)
+        interface = _interface_for(first, interfaces) if first and interfaces else None
+        if interfaces is not None and note is None and interface is None and first:
+            note = f"no interface found with address {first}"
+        alias = interface["alias"] if interface else None
+        gateways = (
             [g for g in interface["gateways"] if ipaddress.ip_address(g).version in versions]
             if interface
             else None
-        ),
-        "dns_servers": interface["dns"] if interface else None,
+        )
+        dns_servers = interface["dns"] if interface else None
+
+    details: dict = {
+        "local_addresses": list(usable.values()),
+        "interface": to_ascii(alias) if alias else None,
+        "gateways": gateways,
+        "dns_servers": dns_servers,
     }
     if note:
         details["network_note"] = note
