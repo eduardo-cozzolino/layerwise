@@ -33,7 +33,7 @@ Repository = "https://github.com/eduardo-cozzolino/layerwise"
 Issues = "https://github.com/eduardo-cozzolino/layerwise/issues"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
 
 [project.scripts]
 layerwise = "layerwise.cli:main"
@@ -41,6 +41,10 @@ layerwise = "layerwise.cli:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.10"
 
 [tool.ruff]
 line-length = 100

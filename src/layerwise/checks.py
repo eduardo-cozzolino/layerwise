@@ -52,7 +52,7 @@ CERT_ERRORS = {
 }
 ISSUER_NOT_FOUND = 20
 
-FAMILY_LABELS = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
+FAMILY_LABELS: dict[int, str] = {socket.AF_INET: "IPv4", socket.AF_INET6: "IPv6"}
 
 
 def _error_label(exc: BaseException) -> str:
@@ -92,7 +92,8 @@ def check_dns(host: str) -> tuple[CheckResult, list[tuple[int, str]]]:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         name = ascii_host(host)
-        reason = RESOLVER_ERRORS.get(exc.errno, f"resolver error {exc.errno}")
+        known = RESOLVER_ERRORS.get(exc.errno) if exc.errno is not None else None
+        reason = known or f"resolver error {exc.errno}"
         result = CheckResult(
             "DNS",
             Status.FAIL,
@@ -109,7 +110,7 @@ def check_dns(host: str) -> tuple[CheckResult, list[tuple[int, str]]]:
 
     addresses: list[tuple[int, str]] = []
     for family, _, _, _, sockaddr in infos:
-        entry = (family, sockaddr[0])
+        entry = (family, str(sockaddr[0]))
         if family in FAMILY_LABELS and entry not in addresses:
             addresses.append(entry)
 
@@ -303,6 +304,8 @@ def check_tls(host: str, address: str, port: int, timeout: float) -> CheckResult
             duration_ms=_elapsed_ms(start),
             details=_os_details(exc),
         )
+    # CERT_REQUIRED: a handshake that completed always has a validated certificate.
+    assert cert is not None
     return summarize_certificate(version, cert, time.time(), _elapsed_ms(start))
 
 

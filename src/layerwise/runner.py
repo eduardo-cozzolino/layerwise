@@ -24,16 +24,17 @@ def run_registry(specs: list[CheckSpec], ctx: Context) -> list[CheckResult]:
     cause: dict[str, str] = {}  # check that did not pass -> the check that actually failed
     for spec in sorted(specs, key=lambda s: s.layer):
         dependency = spec.depends_on
-        dependency_ok = dependency is None or passed[dependency]
+        # The check that actually failed below this one, or None if the dependency passed.
+        root = None if dependency is None or passed[dependency] else cause[dependency]
         if not spec.enabled(ctx):
-            passed[spec.name] = dependency_ok
-            if not dependency_ok:
-                cause[spec.name] = cause[dependency]
+            passed[spec.name] = root is None
+            if root is not None:
+                cause[spec.name] = root
             continue
-        if not dependency_ok:
+        if root is not None:
             passed[spec.name] = False
-            cause[spec.name] = cause[dependency]
-            ctx.skipped.append((spec.name, cause[dependency]))
+            cause[spec.name] = root
+            ctx.skipped.append((spec.name, root))
             continue
         spec_results = spec.run(ctx)
         results.extend(spec_results)
