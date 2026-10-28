@@ -280,7 +280,7 @@ def check_local(host: str) -> CheckResult:
     usable = {f: a for f, a in sources.items() if not ipaddress.ip_address(a).is_unspecified}
 
     # Only the gateways of the families that were probed (an IPv4 target: the IPv4 gateway).
-    versions = {ipaddress.ip_address(a).version for a in usable.values()}
+    versions: set[int] = {ipaddress.ip_address(a).version for a in usable.values()}
     interfaces: tuple[dict, ...] | None = None
     alias: str | None
     gateways: list[str] | None

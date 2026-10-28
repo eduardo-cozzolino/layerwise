@@ -178,7 +178,7 @@ a smoke test against real hosts.
 ```bash
 pip install -e ".[dev]"
 ruff check . && ruff format --check .
-mypy
+mypy --platform linux && mypy --platform darwin && mypy --platform win32
 pytest
 ```
 
