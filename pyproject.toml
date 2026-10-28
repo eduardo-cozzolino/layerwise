@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "layerwise"
-version = "0.1.0"
+version = "0.1.1"
 description = "Layer-by-layer network troubleshooting with ticket-ready escalation reports."
 readme = "README.md"
 license = "MIT"

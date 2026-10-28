@@ -113,7 +113,7 @@ $ layerwise 203.0.113.10:3389 -t 2 --report
 VERDICT: FAIL at TCP IPv4 -> suggested team: firewall
 
 Date:    2026-10-18 09:57:40 UTC
-Tool:    layerwise 0.1.0
+Tool:    layerwise 0.1.1
 Local:   192.0.2.50 via Wi-Fi, gateway 192.0.2.1, DNS 192.0.2.1, 2001:db8::53
 Target:  203.0.113.10:3389
 Tried:   203.0.113.10
