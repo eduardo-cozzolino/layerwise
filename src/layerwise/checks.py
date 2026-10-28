@@ -304,8 +304,22 @@ def check_tls(host: str, address: str, port: int, timeout: float) -> CheckResult
             duration_ms=_elapsed_ms(start),
             details=_os_details(exc),
         )
-    # CERT_REQUIRED: a handshake that completed always has a validated certificate.
-    assert cert is not None
+    if not cert:
+        # Not expected with CERT_REQUIRED, which refuses a handshake without a certificate:
+        # reported as a failure all the same, rather than trusting a connection unverified.
+        return CheckResult(
+            "TLS",
+            Status.FAIL,
+            "handshake completed without a server certificate",
+            hint=(
+                "The server identity could not be verified, so the connection cannot be "
+                "trusted. Inspect what the server sends with: "
+                f"openssl s_client -connect {_hostport(address, port)} "
+                f"-servername {ascii_host(host)}"
+            ),
+            duration_ms=_elapsed_ms(start),
+            details={"version": version},
+        )
     return summarize_certificate(version, cert, time.time(), _elapsed_ms(start))
 
 

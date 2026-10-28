@@ -129,6 +129,32 @@ def test_certificate_expiring_soon():
     assert "renew" in result.hint
 
 
+def test_tls_without_a_peer_certificate_fails(monkeypatch):
+    class FakeTLS:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def version(self):
+            return "TLSv1.3"
+
+        def getpeercert(self):
+            return None
+
+    class FakeContext:
+        def wrap_socket(self, sock, server_hostname):
+            return FakeTLS()
+
+    monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: FakeTLS())
+    monkeypatch.setattr(ssl, "create_default_context", FakeContext)
+    result = checks.check_tls("example.com", "192.0.2.10", 443, timeout=1)
+    assert result.status is Status.FAIL
+    assert result.summary == "handshake completed without a server certificate"
+    assert "openssl s_client -connect 192.0.2.10:443 -servername example.com" in result.hint
+
+
 def test_tls_on_a_plain_tcp_port_fails(listening_port):
     # The listener accepts but never answers the ClientHello, so the handshake times out.
     result = checks.check_tls("localhost", "127.0.0.1", listening_port, timeout=0.5)
